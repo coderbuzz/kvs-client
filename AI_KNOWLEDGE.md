@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@cb90530 -->
+<!-- docs: sync from coderbuzz/codex@b724e01 -->
 
 # KVS Client — AI Agent Knowledge File
 
@@ -46,6 +46,7 @@ import type { KvKey, KvEntry, KvCommitResult, KvListResult, QueueMessage, QueueO
 - `await kv.acknowledge(id)` → `boolean`
 - `await kv.health()` → `{ ok, uptime }`
 - `await kv.reset()` → `{ ok }`
+- `await kv.cleanExpired()` → `{ ok, deleted }`
 - `await kv.open()` — connect WebSocket, authenticate, switch transport
 - `kv.close()` — disconnect, revert to REST
 - `kv.watch(keys, cb)` — real-time key watch (requires WebSocket)

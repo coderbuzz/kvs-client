@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@cb90530 -->
+<!-- docs: sync from coderbuzz/codex@b724e01 -->
 
 # KVS Client &mdash; `@coderbuzz/kvs-client`
 
