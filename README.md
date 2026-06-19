@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@3d47db2 -->
+<!-- docs: sync from coderbuzz/codex@cb90530 -->
 
 # KVS Client &mdash; `@coderbuzz/kvs-client`
 
@@ -92,6 +92,7 @@ kv.close();
 |---|---|---|
 | `health()` | `(): Promise<{ ok, uptime }>` | Server health check (no auth) |
 | `reset()` | `(): Promise<{ ok }>` | Delete all data (testing only) |
+| `cleanExpired()` | `(): Promise<{ ok, deleted }>` | Manually expire stale KV entries |
 | `getAsync` | `(key, fn, ttl?): Promise<T>` | Cache-with-compute, singleflight |
 
 ---
