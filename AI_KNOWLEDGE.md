@@ -1,8 +1,8 @@
-<!-- docs: sync from coderbuzz/codex@46af4b9 -->
+<!-- docs: sync from coderbuzz/codex@7af404c -->
 
 # KVS Client — AI Agent Knowledge File
 
-**Package:** `@coderbuzz/kvs-client` v0.1.0
+**Package:** `@coderbuzz/kvs-client` v0.2.6
 **Purpose:** TypeScript client SDK for `@coderbuzz/kvs-server`. REST + WebSocket RPC.
 **Distribution:** ESM only (`dist/index.js` + `dist/index.d.ts`).
 
