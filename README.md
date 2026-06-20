@@ -1,9 +1,15 @@
-<!-- docs: sync from coderbuzz/codex@cd4a13b -->
+<!-- docs: sync from coderbuzz/codex@46af4b9 -->
 
 # KVS Client &mdash; `@coderbuzz/kvs-client`
 
 > **TypeScript client SDK for `@coderbuzz/kvs-server`.** REST-first, transparently upgrades to WebSocket RPC. Watch keys in real-time, listen to queue push delivery.
 > AI agents: see [AI_KNOWLEDGE.md](https://github.com/coderbuzz/kvs-client/blob/main/AI_KNOWLEDGE.md) for expert context.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@coderbuzz/kvs-client"><img src="https://img.shields.io/npm/v/@coderbuzz/kvs-client.svg?style=flat-square" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@coderbuzz/kvs-client"><img src="https://img.shields.io/npm/dm/@coderbuzz/kvs-client.svg?style=flat-square" alt="npm downloads" /></a>
+  <a href="https://github.com/coderbuzz/kvs-client/blob/main/LICENSE"><img src="https://img.shields.io/github/license/coderbuzz/kvs-client.svg?style=flat-square" alt="MIT License" /></a>
+  <a href="https://github.com/coderbuzz/kvs-client"><img src="https://img.shields.io/github/stars/coderbuzz/kvs-client.svg?style=flat-square" alt="GitHub Stars" /></a>
+</p>
 
 KVS Client is a fetch-based TypeScript SDK for communicating with a `@coderbuzz/kvs-server` instance. After calling `open()` it transparently upgrades to WebSocket JSON-RPC for lower latency. Same API over both transports.
 
