@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@e5210d1 -->
+<!-- docs: sync from coderbuzz/codex@e9b6bce -->
 
 # KVS Client &mdash; `@coderbuzz/kvs-client`
 
@@ -9,8 +9,8 @@
   <a href="https://www.npmjs.com/package/@coderbuzz/kvs-client"><img src="https://img.shields.io/npm/dm/@coderbuzz/kvs-client.svg?style=flat-square" alt="npm downloads" /></a>
   <a href="https://github.com/coderbuzz/kvs-client/blob/main/LICENSE"><img src="https://img.shields.io/github/license/coderbuzz/kvs-client.svg?style=flat-square" alt="MIT License" /></a>
   <a href="https://github.com/coderbuzz/kvs-client"><img src="https://img.shields.io/github/stars/coderbuzz/kvs-client.svg?style=flat-square" alt="GitHub Stars" /></a>
-  <a href="https://github.com/coderbuzz/codex/actions/workflows/ci.kvs-client.yml"><img src="https://github.com/coderbuzz/codex/actions/workflows/ci.kvs-client.yml/badge.svg" alt="CI" /></a>
-  <a href="https://codecov.io/gh/coderbuzz/codex"><img src="https://codecov.io/gh/coderbuzz/codex/graph/badge.svg?flag=kvs-client" alt="Codecov" /></a>
+  <a href="https://github.com/coderbuzz/kvs-client/actions/workflows/ci.yml"><img src="https://github.com/coderbuzz/kvs-client/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://codecov.io/gh/coderbuzz/kvs-client"><img src="https://codecov.io/gh/coderbuzz/kvs-client/graph/badge.svg" alt="Codecov" /></a>
 </p>
 
 KVS Client is a fetch-based TypeScript SDK for communicating with a `@coderbuzz/kvs-server` instance. After calling `open()` it transparently upgrades to WebSocket JSON-RPC for lower latency. Same API over both transports.
