@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { Singleflight } from "@coderbuzz/kvs-client";
+import { Singleflight } from "../src/index";
 
 test("Singleflight deduplicates", async () => {
   const sf = new Singleflight<number>();
