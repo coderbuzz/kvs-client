@@ -1,0 +1,12 @@
+{
+  "name": "@coderbuzz/kvs-client-ci",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@coderbuzz/kvs-client": "latest",
+    "@coderbuzz/kvs": "latest"
+  }
+}
