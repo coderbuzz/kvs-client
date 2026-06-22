@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@4b7f24c -->
+<!-- docs: sync from coderbuzz/codex@7af4dd3 -->
 
 # KVS Client &mdash; `@coderbuzz/kvs-client`
 
@@ -31,10 +31,8 @@ KVS Client is a fetch-based TypeScript SDK for communicating with a `@coderbuzz/
 ## Installation
 
 ```sh
-npm install @coderbuzz/kvs @coderbuzz/kvs-server @coderbuzz/kvs-client
+npm install @coderbuzz/kvs-client
 ```
-
-`@coderbuzz/kvs` is required as a peer (provides TypeScript types used by the client SDK).
 
 ---
 

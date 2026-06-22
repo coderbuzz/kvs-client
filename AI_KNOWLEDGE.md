@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@4b7f24c -->
+<!-- docs: sync from coderbuzz/codex@7af4dd3 -->
 
 # KVS Client — AI Agent Knowledge File
 
@@ -30,7 +30,7 @@ After `close()`, falls back to REST. All methods work over both transports excep
 ```ts
 import { KvsClient, type KvsClientOptions, Singleflight, AtomicBuilder } from "@coderbuzz/kvs-client";
 
-// Types re-exported from @coderbuzz/kvs:
+// All types included — no additional packages needed:
 import type {
   KvKey, KvKeyPart, KvEntry,
   KvCommitResult, KvCommitError,
