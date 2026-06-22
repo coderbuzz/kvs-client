@@ -6,7 +6,6 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@coderbuzz/kvs-client": "latest",
-    "@coderbuzz/kvs": "latest"
+    "@coderbuzz/kvs-client": "latest"
   }
 }
