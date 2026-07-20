@@ -1,8 +1,8 @@
-<!-- docs: sync from coderbuzz/codex@c0ec729 -->
+<!-- docs: sync from coderbuzz/codex@34f92e9 -->
 
 # KVS Client — AI Agent Knowledge File
 
-**Package:** `@coderbuzz/kvs-client` v0.2.6
+**Package:** `@coderbuzz/kvs-client`
 **Purpose:** TypeScript client SDK for `@coderbuzz/kvs-server`. REST-first, transparently upgrades to WebSocket RPC.
 **Distribution:** ESM only (`dist/index.js` + `dist/index.d.ts`).
 
@@ -21,7 +21,7 @@ KvsClient
         └── listen()  — push queue delivery
 ```
 
-After `close()`, falls back to REST. All methods work over both transports except `watch()` and `listen()` which require WebSocket.
+After a disconnect, ordinary methods fall back to REST. All methods work over both transports except `watch()` and `listen()`, which require an open WebSocket. Optional reconnect restores subscriptions from a fresh server snapshot.
 
 ---
 
@@ -37,7 +37,7 @@ import {
 
 // All types included — no additional packages needed:
 import type {
-  KvKey, KvKeyPart, KvEntry,
+  KvKey, KvKeyPart, KvEntry, KvWatchEvent,
   KvCommitResult, KvCommitError,
   KvCheck, KvMutation,
   KvListSelector, KvListOptions, KvListResult,
@@ -59,6 +59,11 @@ interface KvEntry {
   key: KvKey
   value: unknown
   version: number
+}
+
+interface KvWatchEvent {
+  sequence?: number  // monotonic within one server process
+  reset?: boolean    // true when reset() produced the tombstone snapshot
 }
 
 interface KvCommitResult { ok: true; version: number }
@@ -92,12 +97,15 @@ interface QueueOptions { topic?: string; delay?: number; maxAttempts?: number }
 
 ```ts
 interface KvsClientOptions {
-  url: string    // Server base URL, e.g. "http://localhost:3000" (trailing slashes stripped)
-  token: string  // Bearer access token (required)
+  url: string                  // required; trailing slashes stripped
+  token: string                // required bearer token
+  autoReconnect?: boolean      // default false
+  reconnectMinDelayMs?: number // default 250; clamped to >= 50
+  reconnectMaxDelayMs?: number // default 10_000; clamped to >= min
 }
 ```
 
-Both fields are required. No defaults.
+`url` and `token` are required. Reconnect is opt-in for backward compatibility.
 
 ```ts
 const kv = new KvsClient({ url: "http://localhost:3000", token: "secret" });
@@ -113,11 +121,12 @@ Initializes REST transport (`fetch`-based POST). WebSocket state is `null`.
 
 ### `open(): Promise<void>`
 
-1. Idempotent — returns immediately if WebSocket already OPEN.
+1. Idempotent and singleflight — returns immediately if OPEN; concurrent attempts share `openPromise`.
 2. Connects to `ws://host:port/ws` (derived from `url`, `http` → `ws`).
 3. On `open`: sends auth RPC `{ id, method: "auth", params: { token } }`.
 4. On auth success: switches `_transport` from REST to WebSocket RPC.
 5. On auth failure: closes socket, resets transport, throws `"WebSocket authentication failed"`.
+6. On reconnect: resets watch sequence tracking, re-registers the watch, and re-registers every queue topic after authentication.
 
 ```ts
 await kv.open();
@@ -127,7 +136,7 @@ await kv.open();
 ### `close(): void`
 
 1. Nulls out `ws`, resets `_transport` to REST.
-2. Closes WebSocket, clears `watchCallback` and `queueCallbacks`.
+2. Cancels any reconnect timer, closes WebSocket, and clears `watchSubscription` and `queueCallbacks`.
 3. Rejects all pending RPC promises with `"WebSocket closed"`.
 4. All subsequent calls revert to REST automatically.
 
@@ -292,7 +301,7 @@ Failed message requeue runs every 60s on the server.
 
 Both throw `"WebSocket not connected. Call open() first."` if WebSocket is not open.
 
-### `watch(keys: KvKey[], callback: (entries: (KvEntry | null)[]) => void): { cancel: () => void }`
+### `watch(keys: KvKey[], callback: (entries: (KvEntry | null)[], event?: KvWatchEvent) => void): { cancel: () => void }`
 
 Real-time key-change subscriptions. Fires immediately with current values, then on every mutation.
 
@@ -300,9 +309,11 @@ Real-time key-change subscriptions. Fires immediately with current values, then 
 await kv.open();
 const { cancel } = kv.watch(
   [["config", "theme"], ["config", "lang"]],
-  (entries) => {
+  (entries, event) => {
     // entries[0] = KvEntry | null for ["config", "theme"]
     // entries[1] = KvEntry | null for ["config", "lang"]
+    // event.sequence is ordered within this server process
+    // event.reset is true for a reset tombstone batch
   },
 );
 cancel(); // unsubscribe — sends /kv/unwatch RPC
@@ -316,10 +327,10 @@ cancel(); // unsubscribe — sends /kv/unwatch RPC
 
 **Wire format (server → client push):**
 ```json
-{ "type": "watch", "entries": [{ "key": [...], "value": ..., "version": ... } | null, ...] }
+{ "type": "watch", "entries": [{ "key": [...], "value": ..., "version": ... } | null, ...], "sequence": 42, "reset": false }
 ```
 
-**Watch internals on server:** Uses `watchIndex: Map<hex-encoded-key, Set<Watcher>>`. On mutation (`set`/`delete`/`increment`/`atomic.commit`), `notifyWatchers(encodedKey)` fires all watchers for that key. Each watcher re-fetches ALL watched keys' current values on every fire.
+**Watch internals on server:** Core KVS emits one committed mutation batch per operation. Changed entries are reused directly and unchanged watched keys are read at most once per batch. KVS Server groups identical ordered key lists into one core watcher, one serialized payload, then fans that payload out to all peers.
 
 ### `listen(topic: string, callback: (msg: QueueMessage) => void): { cancel: () => void }`
 
@@ -363,7 +374,7 @@ Uses `fetch(`${url}/health`)` directly, not the transport layer.
 
 ### `reset(): Promise<{ ok: true }>`
 
-Deletes ALL data from `kv` and `queue` tables on the server. Clears all watchers. For testing only.
+Deletes ALL data from `kv` and `queue` tables on the server. Existing watchers remain registered and receive a `reset: true` null snapshot. For testing only.
 
 ```ts
 await kv.set(["users", "alice"], { name: "Alice" });
@@ -410,7 +421,7 @@ const { deleted } = await kv.cleanExpired(); // 2
 | Latency | Request-response | Lower (persistent connection) |
 | Watch | — | Yes |
 | Listen | — | Yes |
-| Auto-fallback | — | Yes (on `close()` reverts to REST) |
+| Disconnect | Still available | Falls back to REST; optional reconnect restores subscriptions |
 
 **REST transport details:**
 - All KV/queue methods use `fetch POST` to `{url}{path}` with `Authorization: Bearer {token}` header.
@@ -422,8 +433,8 @@ const { deleted } = await kv.cleanExpired(); // 2
 **WebSocket RPC details:**
 - Counter `rpcId` starts at 0, increments per call, wraps via `++rpcId`.
 - `rpcCallbacks: Map<number, { resolve, reject }>` stores pending promises by id.
-- On message: if `data.id` exists → lookup callback. If `data.type === "watch"` → fire `watchCallback`. If `data.type === "queue"` → fire `queueCallbacks.get(topic)`.
-- On close: rejects all pending promises with `"WebSocket closed"`, clears watch/queue subscriptions.
+- On message: if `data.id` exists → lookup callback. Watch pushes go to `watchSubscription.callback`; queue pushes go to `queueCallbacks.get(topic)`.
+- On close: rejects all pending RPCs and falls back to REST. If `autoReconnect` is false, subscriptions are cleared. If true, they are retained and restored after reconnect.
 - Malformed messages silently ignored (try/catch in onmessage).
 
 ---
@@ -438,6 +449,9 @@ const { deleted } = await kv.cleanExpired(); // 2
 | | `options.maxAttempts` | `3` |
 | `dequeue(topic, limit)` | `topic` | `"default"` |
 | | `limit` | `1` |
+| constructor | `autoReconnect` | `false` |
+| | `reconnectMinDelayMs` | `250` |
+| | `reconnectMaxDelayMs` | `10000` |
 
 ---
 
@@ -464,14 +478,14 @@ Used internally by `getAsync()`. Can also be used standalone for any deduplicati
 ## Gotchas
 
 1. `open()` required for `watch()`/`listen()` — throws `"WebSocket not connected. Call open() first."` if not connected.
-2. After `close()`, all subsequent calls revert to REST automatically.
+2. Explicit `close()` always cancels reconnect and subscriptions; an unexpected close preserves them only when `autoReconnect: true`.
 3. Only ONE active `watch()` per client — calling `watch()` again overwrites the previous subscription.
 4. One `listen()` callback per topic — calling `listen()` again for the same topic overwrites. Multiple topics can be active.
 5. `listen()` callbacks must call `acknowledge()` manually — messages are NOT auto-acked.
 6. `getAsync()` uses `JSON.stringify(key)` as singleflight dedup key. Uses atomic `check({ version: null })` for cross-process safety — two clients computing the same key: one wins, the other re-reads.
 7. `health()` is the only method that bypasses auth — direct GET request, no transport layer.
 8. `@coderbuzz/kvs` is a peer dependency — provides TypeScript types used by the client SDK. Must be installed alongside.
-9. WebSocket auth happens via RPC `auth` method after connection (not in URL by default). Use `?token=` query param on the server side for pre-connect auth.
+9. WebSocket auth happens via RPC `auth` after connection. Query-string tokens are a server migration option and should be disabled in production because URLs can be logged.
 10. `Singleflight` in `kvs-client` is a separate class from the one in `kvs`. Same API, separate implementation.
 11. No `increment` endpoint — the server doesn't expose a dedicated increment RPC. Use `get` + `set` or `atomic()` with version checks for atomic counters.
 12. Queue dispatch timer runs every 1s on the server — `listen()` messages experience up to ~1s max latency.
@@ -542,8 +556,10 @@ private _rpc(path: string, params: unknown): Promise<any> {
 ### Transport Switching
 - Constructor sets `this._transport = this._post.bind(this)` — REST is default.
 - `open()` on success sets `this._transport = this._rpc.bind(this)` — switches to WebSocket.
-- `close()` sets `this._transport = this._post.bind(this)` — reverts to REST.
+- Any close sets `this._transport = this._post.bind(this)` — requests remain usable through REST.
 - All public methods call `await this._transport(path, params)` — transport-agnostic.
+- `openPromise` makes simultaneous `open()` calls share one attempt.
+- Automatic reconnect uses `min(maxDelay, minDelay * 2 ** attempts)` with a random 0.75–1.25 multiplier. Successful authentication resets `attempts` to zero.
 
 ### WebSocket `onmessage` Handler
 ```ts
@@ -558,7 +574,16 @@ ws.onmessage = (event) => {
       else cb.resolve(data.result);
     }
   } else if (data.type === "watch") {
-    this.watchCallback?.(data.entries);        // fire watch callback
+    const subscription = this.watchSubscription;
+    if (!subscription) return;
+    const sequence = typeof data.sequence === "number" ? data.sequence : null;
+    if (sequence !== null && subscription.lastSequence !== null
+        && sequence < subscription.lastSequence) return;
+    if (sequence !== null) subscription.lastSequence = sequence;
+    subscription.callback(data.entries, {
+      sequence: sequence ?? undefined,
+      reset: data.reset === true || undefined,
+    });
   } else if (data.type === "queue") {
     this.queueCallbacks.get(data.topic)?.(data.message);  // fire listener callback
   }
@@ -569,14 +594,19 @@ ws.onmessage = (event) => {
 ### WebSocket `onclose` Handler
 ```ts
 ws.onclose = () => {
+  if (this.ws !== ws) return;                   // ignore stale socket events
   this.ws = null;
   this._transport = this._post.bind(this);     // fallback to REST
-  this.watchCallback = null;                    // clear watch
-  this.queueCallbacks.clear();                  // clear all listeners
   for (const cb of this.rpcCallbacks.values()) {
     cb.reject(new Error("WebSocket closed"));   // reject all pending
   }
   this.rpcCallbacks.clear();
+  if (this.autoReconnect && !this.closedByUser) {
+    this.scheduleReconnect();                   // preserve subscriptions
+  } else if (!this.autoReconnect) {
+    this.watchSubscription = null;
+    this.queueCallbacks.clear();
+  }
 };
 ```
 
@@ -588,23 +618,31 @@ ws.onclose = () => {
 ```
 Client: watch(keys, callback)
   → ws.send({ method: "/kv/watch", params: { keys } })
-  → sets this.watchCallback = callback
+  → sets this.watchSubscription = { keys, callback, lastSequence: null }
      (overwrites previous if any)
 
-Server: registers watcher in store.watchIndex
-  → immediately fires current values
-  → on any mutation to watched keys → fires again
+Server: joins or creates an ordered-key WatchHub group
+  → one underlying store.watch() per identical key list
+  → immediately returns the cached/current full snapshot
+  → one serialization per committed mutation batch, fan-out to group peers
 
 Push message (server → client):
-{ "type": "watch", "entries": [entry|null, ...] }
+{ "type": "watch", "entries": [entry|null, ...], "sequence": 42, "reset": false }
 
 Client onmessage:
-  → data.type === "watch" → this.watchCallback?.(data.entries)
+  → discard a decreasing sequence on the current connection
+  → callback(data.entries, { sequence, reset })
+
+Unexpected disconnect with autoReconnect:
+  → fall back to REST while offline
+  → authenticate a replacement socket using exponential backoff
+  → reset lastSequence and re-subscribe
+  → initial push supplies the current snapshot, covering the offline interval
 
 Cancel:
   client: ws.send({ method: "/kv/unwatch" })
-  → client: this.watchCallback = null
-  → server: removes watcher from watchIndex
+  → client: this.watchSubscription = null
+  → server: removes peer and cancels the core watcher when its group is empty
 ```
 
 ### Listen Flow
