@@ -1,6 +1,6 @@
-<!-- docs: sync from coderbuzz/codex@34f92e9 -->
+<!-- docs: sync from coderbuzz/codex@200be78 -->
 
-# KVS Client &mdash; `@coderbuzz/kvs-client`
+# KVS Client: `@coderbuzz/kvs-client`
 
 > **TypeScript client SDK for `@coderbuzz/kvs-server`.** REST-first, transparently upgrades to WebSocket RPC. Watch keys in real-time, listen to queue push delivery.
 > AI agents: see [AI_KNOWLEDGE.md](https://github.com/coderbuzz/kvs-client/blob/main/AI_KNOWLEDGE.md) for expert context.
@@ -21,15 +21,15 @@ Works with `@coderbuzz/kvs` as a peer dependency for TypeScript types. Pair with
 
 ## Features
 
-- **REST-first** — works immediately after construction, no setup required
-- **WebSocket RPC** — lower latency with `open()`, REST fallback on disconnect
-- **Optional recovery** — exponential-backoff reconnect restores watch/listen subscriptions and refreshes the current snapshot
-- **getAsync** — cache-with-compute pattern with singleflight deduplication + cross-process safety
-- **Atomic operations** — fluent builder for multi-key transactions with version checks
-- **Watch** — real-time key-change subscriptions (requires WebSocket)
-- **Listen** — push-based queue delivery with work-stealing (requires WebSocket)
-- **Health check** — unauthenticated server health endpoint
-- **All types included** — no need to import from `@coderbuzz/kvs` for type usage
+- **REST-first**: works immediately after construction, no setup required
+- **WebSocket RPC**: lower latency with `open()`, REST fallback on disconnect
+- **Optional recovery**: exponential-backoff reconnect restores watch/listen subscriptions and refreshes the current snapshot
+- **getAsync**: cache-with-compute pattern with singleflight deduplication + cross-process safety
+- **Atomic operations**: fluent builder for multi-key transactions with version checks
+- **Watch**: real-time key-change subscriptions (requires WebSocket)
+- **Listen**: push-based queue delivery with work-stealing (requires WebSocket)
+- **Health check**: unauthenticated server health endpoint
+- **All types included**: no need to import from `@coderbuzz/kvs` for type usage
 
 ---
 
@@ -74,7 +74,7 @@ for (const msg of msgs) {
     await sendEmail(msg.payload);
     await kv.acknowledge(msg.id);
   } catch {
-    // Don't ack — auto-requeued after 30s
+    // Don't ack: auto-requeued after 30s
   }
 }
 
@@ -174,19 +174,19 @@ await kv.list({ prefix: ["logs"] }, { limit: 5, reverse: true });
 Cache-with-compute pattern with singleflight deduplication and cross-process safety:
 
 ```ts
-// 100 concurrent callers — fn() runs once across all clients on this machine
+// 100 concurrent callers: fn() runs once across all clients on this machine
 const ad = await kv.getAsync(["ads", "venue", 42], () => fetchNextAd(42), 30_000);
 ```
 
 **Algorithm:**
 1. Singleflight dedup within process (`this.sf.do(JSON.stringify(key), ...)`)
-2. Check server cache via `get(key)` — return immediately on hit
+2. Check server cache via `get(key)`: return immediately on hit
 3. Call `fn()` exactly once
 4. Atomic check-and-set: `check({ key, version: null }).set(key, value, { ttl }).commit()`
 5. If CAS succeeds → return computed value
 6. If CAS fails (another client wrote first) → re-read from server and return that value
 
-The `version: null` check ensures only one concurrent caller wins — safe across multiple client instances.
+The `version: null` check ensures only one concurrent caller wins. It stays safe across multiple client instances.
 
 ### `atomic(): AtomicBuilder`
 
@@ -205,7 +205,7 @@ const result = await kv.atomic()
 if (result.ok) {
   console.log("Version:", result.version);
 } else {
-  console.log("Check failed — retry");
+  console.log("Check failed, retry");
 }
 ```
 
@@ -244,13 +244,13 @@ Dequeue messages ready for delivery. Messages are moved to `"processing"` status
 ```ts
 const messages = await kv.dequeue("emails", 10);
 
-// Worker loop — acknowledge on success, skip on failure
+// Worker loop: acknowledge on success, skip on failure
 for (const msg of messages) {
   try {
     await sendEmail(msg.payload);
     await kv.acknowledge(msg.id); // mark as done
   } catch {
-    // Don't acknowledge — auto-requeued after 30s (up to maxAttempts)
+    // Don't acknowledge: auto-requeued after 30s (up to maxAttempts)
   }
 }
 ```
@@ -284,7 +284,7 @@ await kv.open();
 ```
 
 **Process:**
-1. Idempotent and singleflight — concurrent callers share one connection attempt
+1. Idempotent and singleflight: concurrent callers share one connection attempt
 2. Connects to `ws://host:port/ws` (derived from `url`, `http` → `ws`)
 3. Sends auth RPC `{ id, method: "auth", params: { token } }`
 4. On success: switches transport to WebSocket RPC
@@ -320,11 +320,11 @@ const { cancel } = kv.watch(
   },
 );
 
-cancel(); // unsubscribe — sends /kv/unwatch RPC
+cancel(); // unsubscribe: sends /kv/unwatch RPC
 ```
 
 **Limitations:**
-- Only ONE active `watch()` per client — calling again overwrites the previous subscription.
+- Only ONE active `watch()` per client: calling again overwrites the previous subscription.
 - Fires the full set of current values for ALL watched keys (not just the changed one).
 - `event.sequence` is monotonic within one server process. Decreasing sequences on the same connection are ignored; sequence tracking resets after reconnect.
 - Reconnect recovery is snapshot-based: re-subscription immediately returns current values, covering changes made while offline.
@@ -341,13 +341,13 @@ const { cancel } = kv.listen("emails", (msg) => {
   kv.acknowledge(msg.id); // must ack manually
 });
 
-cancel(); // unsubscribe — sends /queue/unlisten RPC
+cancel(); // unsubscribe: sends /queue/unlisten RPC
 ```
 
 **Limitations:**
-- One callback per topic per client — calling again for the same topic overwrites the previous.
+- One callback per topic per client: calling again for the same topic overwrites the previous.
 - Multiple topics can be listened to simultaneously.
-- Server dispatch timer runs every 1 s — messages are not instant (~1s max latency).
+- Server dispatch timer runs every 1 s: messages are not instant (~1s max latency).
 - Messages distributed round-robin across all connected listeners (work-stealing).
 
 ---
@@ -356,7 +356,7 @@ cancel(); // unsubscribe — sends /queue/unlisten RPC
 
 ### `health(): Promise<{ ok: boolean, uptime: number }>`
 
-Direct GET request — bypasses both REST and WebSocket transports. No auth required.
+Direct GET request. Bypasses both REST and WebSocket transports. No auth required.
 
 ```ts
 const status = await kv.health();
@@ -379,7 +379,7 @@ Manually expire stale KV entries on the server. Returns count of deleted rows.
 ```ts
 await kv.set(["cache", "a"], "x", { ttl: 1000 });
 await kv.set(["cache", "b"], "y", { ttl: 1000 });
-// After 2s, entries are expired on server — cleanExpired() removes them immediately
+// After 2s, entries are expired on server: cleanExpired() removes them immediately
 const data = await kv.cleanExpired();
 // { ok: true, deleted: 2 }
 ```
@@ -409,8 +409,8 @@ const data = await kv.cleanExpired();
 |---|---|---|
 | Default | Yes | No (requires `open()`) |
 | Latency | Request-response | Lower (persistent connection) |
-| Watch | — | Yes |
-| Listen | — | Yes |
+| Watch | N/A | Yes |
+| Listen | N/A | Yes |
 | Disconnect behavior | Remains available | RPCs fall back to REST; reconnect is optional |
 
 ---
@@ -433,7 +433,7 @@ const data = await kv.cleanExpired();
 
 ## Types
 
-All types are re-exported from `@coderbuzz/kvs-client` — no need to import from `@coderbuzz/kvs`:
+All types are re-exported from `@coderbuzz/kvs-client`. No need to import from `@coderbuzz/kvs`:
 
 ```ts
 import type {
@@ -461,7 +461,7 @@ import type {
 | `KvWatchEvent` | `{ sequence?: number, reset?: boolean }` |
 | `KvCommitResult` | `{ ok: true, version: number }` |
 | `KvCommitError` | `{ ok: false }` |
-| `KvCheck` | `{ key: KvKey, version: number \| null }` — `null` = "must not exist" |
+| `KvCheck` | `{ key: KvKey, version: number \| null }`: `null` = "must not exist" |
 | `KvMutation` | `{ type: "set" \| "delete", key: KvKey, value?: unknown, ttl?: number }` |
 | `KvListSelector` | `{ prefix?: KvKey, start?: KvKey, end?: KvKey }` |
 | `KvListOptions` | `{ limit?: number, cursor?: string, reverse?: boolean }` |
@@ -473,16 +473,16 @@ import type {
 
 ## Gotchas
 
-1. `open()` required for `watch()`/`listen()` — throws `"WebSocket not connected. Call open() first."` if not connected.
-2. Only ONE active `watch()` per client — calling `watch()` again overwrites the previous subscription.
-3. One `listen()` callback per topic — calling `listen()` again for the same topic overwrites. Multiple topics can be active simultaneously.
-4. `listen()` callbacks must call `acknowledge()` manually — messages are NOT auto-acked.
+1. `open()` required for `watch()`/`listen()`: throws `"WebSocket not connected. Call open() first."` if not connected.
+2. Only ONE active `watch()` per client: calling `watch()` again overwrites the previous subscription.
+3. One `listen()` callback per topic: calling `listen()` again for the same topic overwrites. Multiple topics can be active simultaneously.
+4. `listen()` callbacks must call `acknowledge()` manually: messages are NOT auto-acked.
 5. Explicit `close()` reverts to REST, cancels reconnect, and removes watch/listen subscriptions. With `autoReconnect: true`, only unexpected closes preserve and restore subscriptions.
-6. `getAsync()` uses `JSON.stringify(key)` as singleflight dedup key — same array in same order. Uses atomic `check({ version: null })` for cross-process safety.
-7. `health()` is the only method that bypasses auth — direct GET request, no transport layer.
-8. `@coderbuzz/kvs` is a peer dependency — provides TypeScript types. Must be installed alongside.
-9. Queue dispatch timer runs every 1s on the server — `listen()` messages experience up to 1s latency.
-10. No `increment` endpoint — use `get` + `set` or `atomic()` for atomic counters.
+6. `getAsync()` uses `JSON.stringify(key)` as singleflight dedup key: same array in same order. Uses atomic `check({ version: null })` for cross-process safety.
+7. `health()` is the only method that bypasses auth: direct GET request, no transport layer.
+8. `@coderbuzz/kvs` is a peer dependency: provides TypeScript types. Must be installed alongside.
+9. Queue dispatch timer runs every 1s on the server: `listen()` messages experience up to 1s latency.
+10. No `increment` endpoint: use `get` + `set` or `atomic()` for atomic counters.
 
 ---
 

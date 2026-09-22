@@ -1,6 +1,6 @@
-<!-- docs: sync from coderbuzz/codex@34f92e9 -->
+<!-- docs: sync from coderbuzz/codex@200be78 -->
 
-# KVS Client — AI Agent Knowledge File
+# KVS Client: AI Agent Knowledge File
 
 **Package:** `@coderbuzz/kvs-client`
 **Purpose:** TypeScript client SDK for `@coderbuzz/kvs-server`. REST-first, transparently upgrades to WebSocket RPC.
@@ -17,8 +17,8 @@ KvsClient
   ├── REST transport (default, via fetch POST)
   └── WebSocket RPC (after open())
         ├── All KV/queue methods (lower latency)
-        ├── watch()   — real-time key subscriptions
-        └── listen()  — push queue delivery
+        ├── watch()   : real-time key subscriptions
+        └── listen()  : push queue delivery
 ```
 
 After a disconnect, ordinary methods fall back to REST. All methods work over both transports except `watch()` and `listen()`, which require an open WebSocket. Optional reconnect restores subscriptions from a fresh server snapshot.
@@ -35,7 +35,7 @@ import {
   AtomicBuilder,
 } from "@coderbuzz/kvs-client";
 
-// All types included — no additional packages needed:
+// All types included: no additional packages needed
 import type {
   KvKey, KvKeyPart, KvEntry, KvWatchEvent,
   KvCommitResult, KvCommitError,
@@ -113,7 +113,7 @@ const kv = new KvsClient({ url: "http://localhost:3000", token: "secret" });
 
 Initializes REST transport (`fetch`-based POST). WebSocket state is `null`.
 
-**Public property:** `kv.sf: Singleflight` — the singleflight instance used by `getAsync()`.
+**Public property:** `kv.sf: Singleflight`, the singleflight instance used by `getAsync()`.
 
 ---
 
@@ -121,7 +121,7 @@ Initializes REST transport (`fetch`-based POST). WebSocket state is `null`.
 
 ### `open(): Promise<void>`
 
-1. Idempotent and singleflight — returns immediately if OPEN; concurrent attempts share `openPromise`.
+1. Idempotent and singleflight: returns immediately if OPEN; concurrent attempts share `openPromise`.
 2. Connects to `ws://host:port/ws` (derived from `url`, `http` → `ws`).
 3. On `open`: sends auth RPC `{ id, method: "auth", params: { token } }`.
 4. On auth success: switches `_transport` from REST to WebSocket RPC.
@@ -226,19 +226,19 @@ const result = await kv.atomic()
 Cache-with-compute with singleflight deduplication and cross-process safety.
 
 ```ts
-// 100 concurrent callers — fn() runs once across all clients on this machine
+// 100 concurrent callers: fn() runs once across all clients on this machine
 const ad = await kv.getAsync(["ads", "venue", 42], () => fetchNextAd(42), 30_000);
 ```
 
 **Algorithm:**
 1. Singleflight dedup within process (`this.sf.do(JSON.stringify(key), ...)`)
-2. Check server cache via `get(key)` — return immediately on hit
+2. Check server cache via `get(key)`: return immediately on hit
 3. Call `fn()` exactly once
 4. Atomic check-and-set: `check({ key, version: null }).set(key, value, { ttl }).commit()`
 5. If CAS succeeds → return computed value
 6. If CAS fails (another client wrote first) → re-read from server and return that value
 
-The `version: null` check means "only write if key doesn't exist" — ensures only one concurrent caller wins across multiple client instances. No cache stampede on cold start.
+The `version: null` check means "only write if key doesn't exist". It ensures only one concurrent caller wins across multiple client instances, with no cache stampede on cold start.
 
 ---
 
@@ -267,13 +267,13 @@ Dequeue messages ready for delivery. Messages are moved to `"processing"` status
 ```ts
 const messages = await kv.dequeue("emails", 10);
 
-// Worker loop — acknowledge on success, skip on failure
+// Worker loop: acknowledge on success, skip on failure
 for (const msg of messages) {
   try {
     await sendEmail(msg.payload);
     await kv.acknowledge(msg.id);  // mark as done
   } catch {
-    // Don't acknowledge — requeued after 30s (up to maxAttempts)
+    // Don't acknowledge: requeued after 30s (up to maxAttempts)
     console.error(`Failed ${msg.id}, attempt ${msg.attempts + 1}/${msg.maxAttempts}`);
   }
 }
@@ -297,7 +297,7 @@ Failed message requeue runs every 60s on the server.
 
 ---
 
-## Watch & Listen (require WebSocket — `open()` first)
+## Watch & Listen (require WebSocket: `open()` first)
 
 Both throw `"WebSocket not connected. Call open() first."` if WebSocket is not open.
 
@@ -316,14 +316,14 @@ const { cancel } = kv.watch(
     // event.reset is true for a reset tombstone batch
   },
 );
-cancel(); // unsubscribe — sends /kv/unwatch RPC
+cancel(); // unsubscribe: sends /kv/unwatch RPC
 ```
 
 **Limitations:**
-- Only ONE watch active per client — setting a new watch overwrites the previous callback.
+- Only ONE watch active per client: setting a new watch overwrites the previous callback.
 - Cancel sends `/kv/unwatch` RPC.
 - Fires the full set of current values for ALL watched keys (not just the changed one).
-- Errors from callbacks are silently caught — won't break the WebSocket dispatch.
+- Errors from callbacks are silently caught, so they won't break the WebSocket dispatch.
 
 **Wire format (server → client push):**
 ```json
@@ -348,7 +348,7 @@ cancel(); // sends /queue/unlisten RPC
 **Limitations:**
 - One callback per topic per client. Setting a new listener for the same topic overwrites the previous.
 - Multiple topics can be listened to simultaneously (uses `Map<topic, callback>`).
-- Server dispatch timer runs every 1s — messages experience up to ~1s latency.
+- Server dispatch timer runs every 1s: messages experience up to ~1s latency.
 
 **Wire format (server → client push):**
 ```json
@@ -363,7 +363,7 @@ cancel(); // sends /queue/unlisten RPC
 
 ### `health(): Promise<{ ok: boolean, uptime: number }>`
 
-Direct GET request — bypasses both REST and WebSocket transports. No auth required.
+Direct GET request. Bypasses both REST and WebSocket transports. No auth required.
 
 ```ts
 const status = await kv.health();
@@ -390,7 +390,7 @@ Manually expire stale KV entries on the server. Returns count of deleted rows. (
 ```ts
 await kv.set(["cache", "a"], "x", { ttl: 1_000 });
 await kv.set(["cache", "b"], "y", { ttl: 1_000 });
-// After 2s, entries are expired — cleanExpired() removes them immediately
+// After 2s, entries are expired: cleanExpired() removes them immediately
 const { deleted } = await kv.cleanExpired(); // 2
 ```
 
@@ -419,8 +419,8 @@ const { deleted } = await kv.cleanExpired(); // 2
 |---|---|---|
 | Default | Yes | No (requires `open()`) |
 | Latency | Request-response | Lower (persistent connection) |
-| Watch | — | Yes |
-| Listen | — | Yes |
+| Watch | N/A | Yes |
+| Listen | N/A | Yes |
 | Disconnect | Still available | Falls back to REST; optional reconnect restores subscriptions |
 
 **REST transport details:**
@@ -428,7 +428,7 @@ const { deleted } = await kv.cleanExpired(); // 2
 - Body: `JSON.stringify(params)`.
 - Response: `res.json()`.
 - On HTTP error status: throws `"KVS {path}: {status} {statusText}"`.
-- `health()` uses raw `fetch GET {url}/health` — bypasses transport layer.
+- `health()` uses raw `fetch GET {url}/health`, bypassing the transport layer.
 
 **WebSocket RPC details:**
 - Counter `rpcId` starts at 0, increments per call, wraps via `++rpcId`.
@@ -464,7 +464,7 @@ import { Singleflight } from "@coderbuzz/kvs-client";
 
 const sf = new Singleflight<User>();
 
-// 100 concurrent calls for "user:42" — fetchUser() runs once
+// 100 concurrent calls for "user:42": fetchUser() runs once
 const user = await sf.do("user:42", () => fetchUser(42));
 
 sf.size;           // number of in-flight keys
@@ -477,18 +477,18 @@ Used internally by `getAsync()`. Can also be used standalone for any deduplicati
 
 ## Gotchas
 
-1. `open()` required for `watch()`/`listen()` — throws `"WebSocket not connected. Call open() first."` if not connected.
+1. `open()` required for `watch()`/`listen()`: throws `"WebSocket not connected. Call open() first."` if not connected.
 2. Explicit `close()` always cancels reconnect and subscriptions; an unexpected close preserves them only when `autoReconnect: true`.
-3. Only ONE active `watch()` per client — calling `watch()` again overwrites the previous subscription.
-4. One `listen()` callback per topic — calling `listen()` again for the same topic overwrites. Multiple topics can be active.
-5. `listen()` callbacks must call `acknowledge()` manually — messages are NOT auto-acked.
-6. `getAsync()` uses `JSON.stringify(key)` as singleflight dedup key. Uses atomic `check({ version: null })` for cross-process safety — two clients computing the same key: one wins, the other re-reads.
-7. `health()` is the only method that bypasses auth — direct GET request, no transport layer.
-8. `@coderbuzz/kvs` is a peer dependency — provides TypeScript types used by the client SDK. Must be installed alongside.
+3. Only ONE active `watch()` per client: calling `watch()` again overwrites the previous subscription.
+4. One `listen()` callback per topic: calling `listen()` again for the same topic overwrites. Multiple topics can be active.
+5. `listen()` callbacks must call `acknowledge()` manually: messages are NOT auto-acked.
+6. `getAsync()` uses `JSON.stringify(key)` as singleflight dedup key. Uses atomic `check({ version: null })` for cross-process safety: two clients computing the same key, one wins and the other re-reads.
+7. `health()` is the only method that bypasses auth: direct GET request, no transport layer.
+8. `@coderbuzz/kvs` is a peer dependency: provides TypeScript types used by the client SDK. Must be installed alongside.
 9. WebSocket auth happens via RPC `auth` after connection. Query-string tokens are a server migration option and should be disabled in production because URLs can be logged.
 10. `Singleflight` in `kvs-client` is a separate class from the one in `kvs`. Same API, separate implementation.
-11. No `increment` endpoint — the server doesn't expose a dedicated increment RPC. Use `get` + `set` or `atomic()` with version checks for atomic counters.
-12. Queue dispatch timer runs every 1s on the server — `listen()` messages experience up to ~1s max latency.
+11. No `increment` endpoint: the server doesn't expose a dedicated increment RPC. Use `get` + `set` or `atomic()` with version checks for atomic counters.
+12. Queue dispatch timer runs every 1s on the server: `listen()` messages experience up to ~1s max latency.
 13. Messages not acknowledged within 30s are auto-requeued by the server (up to `maxAttempts`).
 
 ---
@@ -509,13 +509,13 @@ Each KvsClient method maps to a specific HTTP endpoint:
 | `acknowledge` | POST | `/queue/ack` | `{ id }` |
 | `reset` | POST | `/kv/reset` | `{}` |
 | `cleanExpired` | POST | `/kv/clean-expired` | `{}` |
-| `health` | GET | `/health` | — (no body, no auth) |
+| `health` | GET | `/health` | none (no body, no auth) |
 
 **REST transport details:**
 - All POST requests use `Content-Type: application/json` and `Authorization: Bearer {token}` headers.
 - All POST responses are JSON parsed from `res.json()`.
 - Non-2xx status → throws `Error("KVS {path}: {status} {statusText}")`.
-- `health()` bypasses the transport layer entirely — uses raw `fetch(this.url + "/health")`.
+- `health()` bypasses the transport layer entirely, using raw `fetch(this.url + "/health")`.
 
 **WebSocket RPC:** Same payload shapes sent as `{ id, method, params }` JSON-RPC messages. Responses come back as `{ id, result }` or `{ id, error }`.
 
@@ -523,7 +523,7 @@ Each KvsClient method maps to a specific HTTP endpoint:
 
 ## Transport Internals
 
-### `_post(path, params)` — REST transport
+### `_post(path, params)`: REST transport
 ```ts
 private async _post(path: string, params: unknown): Promise<any> {
   const res = await fetch(`${this.url}${path}`, {
@@ -535,10 +535,10 @@ private async _post(path: string, params: unknown): Promise<any> {
   return res.json();
 }
 ```
-- Synchronous in flow — one request at a time (no pipelining).
+- Synchronous in flow: one request at a time (no pipelining).
 - Errors thrown synchronously on non-2xx status.
 
-### `_rpc(path, params)` — WebSocket RPC
+### `_rpc(path, params)`: WebSocket RPC
 ```ts
 private _rpc(path: string, params: unknown): Promise<any> {
   const id = ++this.rpcId;
@@ -548,16 +548,16 @@ private _rpc(path: string, params: unknown): Promise<any> {
   });
 }
 ```
-- Increments `rpcId` (starts at 0, never resets, wraps via 64-bit overflow — practically unbounded).
+- Increments `rpcId` (starts at 0, never resets, wraps via 64-bit overflow, practically unbounded).
 - Stores `{ resolve, reject }` in `rpcCallbacks` Map keyed by `id`.
 - Sends JSON-RPC request over WebSocket.
 - Response routed via `onmessage` handler: lookup by `data.id`, call `resolve(data.result)` or `reject(data.error)`.
 
 ### Transport Switching
-- Constructor sets `this._transport = this._post.bind(this)` — REST is default.
-- `open()` on success sets `this._transport = this._rpc.bind(this)` — switches to WebSocket.
-- Any close sets `this._transport = this._post.bind(this)` — requests remain usable through REST.
-- All public methods call `await this._transport(path, params)` — transport-agnostic.
+- Constructor sets `this._transport = this._post.bind(this)`: REST is default.
+- `open()` on success sets `this._transport = this._rpc.bind(this)`: switches to WebSocket.
+- Any close sets `this._transport = this._post.bind(this)`: requests remain usable through REST.
+- All public methods call `await this._transport(path, params)`, staying transport-agnostic.
 - `openPromise` makes simultaneous `open()` calls share one attempt.
 - Automatic reconnect uses `min(maxDelay, minDelay * 2 ** attempts)` with a random 0.75–1.25 multiplier. Successful authentication resets `attempts` to zero.
 
@@ -691,12 +691,12 @@ Cancel:
 Pending RPC callbacks are orphaned if:
 - WebSocket closes unexpectedly (rejected with `"WebSocket closed"`)
 - Server crashes before responding (same rejection via onclose)
-- Server sends malformed response without matching `id` (orphaned, never resolved — potential memory leak if server is buggy)
+- Server sends malformed response without matching `id` (orphaned, never resolved: potential memory leak if server is buggy)
 
 ---
 
 ## Server & Client Packages
 
-- `@coderbuzz/kvs` — the embeddable store engine (SQLite/PostgreSQL) used by the server
-- `@coderbuzz/kvs-server` — wraps the store into HTTP REST + WebSocket server
-- `@coderbuzz/kvs-client` — this package, the TypeScript SDK for the server
+- `@coderbuzz/kvs`: the embeddable store engine (SQLite/PostgreSQL) used by the server
+- `@coderbuzz/kvs-server`: wraps the store into HTTP REST + WebSocket server
+- `@coderbuzz/kvs-client`: this package, the TypeScript SDK for the server
