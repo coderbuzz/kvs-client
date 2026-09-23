@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@200be78 -->
+<!-- docs: sync from coderbuzz/codex@b37bd48 -->
 
 # KVS Client: `@coderbuzz/kvs-client`
 
@@ -15,7 +15,7 @@
 
 KVS Client is a fetch-based TypeScript SDK for communicating with a `@coderbuzz/kvs-server` instance. Works immediately over REST after construction. After calling `open()` it transparently upgrades to WebSocket JSON-RPC for lower latency. Same API over both transports.
 
-Works with `@coderbuzz/kvs` as a peer dependency for TypeScript types. Pair with `@coderbuzz/kvs-server` on the backend.
+Has no dependencies or peer dependencies: it ships its own copies of the KVS types. Pair with `@coderbuzz/kvs-server` on the backend.
 
 ---
 
@@ -36,7 +36,7 @@ Works with `@coderbuzz/kvs` as a peer dependency for TypeScript types. Pair with
 ## Installation
 
 ```sh
-npm install @coderbuzz/kvs @coderbuzz/kvs-client
+npm install @coderbuzz/kvs-client
 ```
 
 ---
@@ -174,7 +174,7 @@ await kv.list({ prefix: ["logs"] }, { limit: 5, reverse: true });
 Cache-with-compute pattern with singleflight deduplication and cross-process safety:
 
 ```ts
-// 100 concurrent callers: fn() runs once across all clients on this machine
+// 100 concurrent callers on one client: fn() runs once
 const ad = await kv.getAsync(["ads", "venue", 42], () => fetchNextAd(42), 30_000);
 ```
 
@@ -186,7 +186,7 @@ const ad = await kv.getAsync(["ads", "venue", 42], () => fetchNextAd(42), 30_000
 5. If CAS succeeds → return computed value
 6. If CAS fails (another client wrote first) → re-read from server and return that value
 
-The `version: null` check ensures only one concurrent caller wins. It stays safe across multiple client instances.
+The `version: null` check ensures only one concurrent writer wins. Across multiple client instances `fn()` may run once per instance, but every caller returns the value that was stored first.
 
 ### `atomic(): AtomicBuilder`
 
@@ -288,7 +288,7 @@ await kv.open();
 2. Connects to `ws://host:port/ws` (derived from `url`, `http` → `ws`)
 3. Sends auth RPC `{ id, method: "auth", params: { token } }`
 4. On success: switches transport to WebSocket RPC
-5. On failure: throws `"WebSocket authentication failed"`
+5. On failure: rejects with `"WebSocket connection failed"` (socket error) or the server's auth error (`"Unauthorized"`, after which the server closes the socket)
 
 With `autoReconnect: true`, an unexpected close immediately returns ordinary KV/queue calls to REST, rejects in-flight RPCs, and schedules reconnect with exponential backoff plus 0.75–1.25 jitter. After authentication, the client restores its watch and queue listeners. Explicit `close()` never reconnects.
 
@@ -347,8 +347,9 @@ cancel(); // unsubscribe: sends /queue/unlisten RPC
 **Limitations:**
 - One callback per topic per client: calling again for the same topic overwrites the previous.
 - Multiple topics can be listened to simultaneously.
-- Server dispatch timer runs every 1 s: messages are not instant (~1s max latency).
+- Pending messages are pushed when you listen and on each non-delayed `enqueue()`. Delayed, requeued, and `atomic()`-enqueued messages wait for the server's 1 s dispatch timer.
 - Messages distributed round-robin across all connected listeners (work-stealing).
+- Without `autoReconnect`, an unexpected disconnect drops all watch/listen subscriptions; call `open()` and subscribe again.
 
 ---
 
@@ -480,9 +481,10 @@ import type {
 5. Explicit `close()` reverts to REST, cancels reconnect, and removes watch/listen subscriptions. With `autoReconnect: true`, only unexpected closes preserve and restore subscriptions.
 6. `getAsync()` uses `JSON.stringify(key)` as singleflight dedup key: same array in same order. Uses atomic `check({ version: null })` for cross-process safety.
 7. `health()` is the only method that bypasses auth: direct GET request, no transport layer.
-8. `@coderbuzz/kvs` is a peer dependency: provides TypeScript types. Must be installed alongside.
-9. Queue dispatch timer runs every 1s on the server: `listen()` messages experience up to 1s latency.
+8. No dependency on `@coderbuzz/kvs`: all types are bundled in this package. `KvWatchEvent` here is `{ sequence?, reset? }`, a subset of the store's type.
+9. Delayed, requeued, and `atomic()`-enqueued messages reach `listen()` via the server's 1 s dispatch timer; non-delayed `enqueue()` pushes immediately.
 10. No `increment` endpoint: use `get` + `set` or `atomic()` for atomic counters.
+11. `watch()` and `listen()` send their request without an `id`, so a server-side rejection (too many keys, forbidden key or topic) is not reported: no events arrive and no error is thrown.
 
 ---
 
@@ -495,10 +497,13 @@ import type {
 { "id": 2, "method": "/kv/set", "params": { "key": ["counter"], "value": 42, "ttl": 60000 } }
 { "id": 3, "method": "/kv/atomic", "params": { "checks": [...], "mutations": [...], "enqueues": [...] } }
 { "id": 4, "method": "/queue/enqueue", "params": { "payload": {...}, "topic": "emails", "delay": 5000 } }
-{ "id": 5, "method": "/kv/watch", "params": { "keys": [["config", "theme"], ["config", "lang"]] } }
-{ "id": 6, "method": "/kv/unwatch" }
-{ "id": 7, "method": "/queue/listen", "params": { "topic": "emails" } }
-{ "id": 8, "method": "/queue/unlisten", "params": { "topic": "emails" } }
+{ "id": 5, "method": "auth", "params": { "token": "..." } }
+
+// Sent without id (no response expected)
+{ "method": "/kv/watch", "params": { "keys": [["config", "theme"], ["config", "lang"]] } }
+{ "method": "/kv/unwatch" }
+{ "method": "/queue/listen", "params": { "topic": "emails" } }
+{ "method": "/queue/unlisten", "params": { "topic": "emails" } }
 ```
 
 ### Server → Client Response
@@ -511,7 +516,8 @@ import type {
 ### Push Events (unsolicited, no `id`)
 
 ```json
-{ "type": "watch", "entries": [{ "key": [...], "value": ..., "version": 1 }, null], "sequence": 42, "reset": false }
+{ "type": "watch", "entries": [{ "key": [...], "value": ..., "version": 1 }, null], "sequence": 42 }
+// "reset": true is present only on reset tombstone snapshots
 { "type": "queue", "topic": "emails", "message": { "id": 1, "payload": ..., "attempts": 0 } }
 ```
 

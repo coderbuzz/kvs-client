@@ -1,10 +1,11 @@
-<!-- docs: sync from coderbuzz/codex@200be78 -->
+<!-- docs: sync from coderbuzz/codex@b37bd48 -->
 
 # KVS Client: AI Agent Knowledge File
 
 **Package:** `@coderbuzz/kvs-client`
 **Purpose:** TypeScript client SDK for `@coderbuzz/kvs-server`. REST-first, transparently upgrades to WebSocket RPC.
 **Distribution:** ESM only (`dist/index.js` + `dist/index.d.ts`).
+**Dependencies:** none, and no peer dependencies. It does not import `@coderbuzz/kvs`; all types are local copies. Install: `npm install @coderbuzz/kvs-client`.
 
 ---
 
@@ -125,7 +126,7 @@ Initializes REST transport (`fetch`-based POST). WebSocket state is `null`.
 2. Connects to `ws://host:port/ws` (derived from `url`, `http` → `ws`).
 3. On `open`: sends auth RPC `{ id, method: "auth", params: { token } }`.
 4. On auth success: switches `_transport` from REST to WebSocket RPC.
-5. On auth failure: closes socket, resets transport, throws `"WebSocket authentication failed"`.
+5. On failure: a socket error rejects with `"WebSocket connection failed"`. A wrong token makes the server reply `{ id, error: "Unauthorized" }` and close with 4001, so `open()` rejects with `Error("Unauthorized")`. The `"WebSocket authentication failed"` branch (close socket, reset transport) runs only if the auth result lacks `ok`.
 6. On reconnect: resets watch sequence tracking, re-registers the watch, and re-registers every queue topic after authentication.
 
 ```ts
@@ -226,7 +227,7 @@ const result = await kv.atomic()
 Cache-with-compute with singleflight deduplication and cross-process safety.
 
 ```ts
-// 100 concurrent callers: fn() runs once across all clients on this machine
+// 100 concurrent callers on one client: fn() runs once
 const ad = await kv.getAsync(["ads", "venue", 42], () => fetchNextAd(42), 30_000);
 ```
 
@@ -238,7 +239,7 @@ const ad = await kv.getAsync(["ads", "venue", 42], () => fetchNextAd(42), 30_000
 5. If CAS succeeds → return computed value
 6. If CAS fails (another client wrote first) → re-read from server and return that value
 
-The `version: null` check means "only write if key doesn't exist". It ensures only one concurrent caller wins across multiple client instances, with no cache stampede on cold start.
+The `version: null` check means "only write if key doesn't exist". Singleflight is per `KvsClient` instance, so N instances on a cold key can run `fn()` up to N times; the CAS ensures only the first write is stored and every caller returns that stored value (or its own value if the re-read finds nothing).
 
 ---
 
@@ -327,8 +328,9 @@ cancel(); // unsubscribe: sends /kv/unwatch RPC
 
 **Wire format (server → client push):**
 ```json
-{ "type": "watch", "entries": [{ "key": [...], "value": ..., "version": ... } | null, ...], "sequence": 42, "reset": false }
+{ "type": "watch", "entries": [{ "key": [...], "value": ..., "version": ... } | null, ...], "sequence": 42 }
 ```
+`reset: true` is added only on reset tombstone snapshots; the server omits it otherwise.
 
 **Watch internals on server:** Core KVS emits one committed mutation batch per operation. Changed entries are reused directly and unchanged watched keys are read at most once per batch. KVS Server groups identical ordered key lists into one core watcher, one serialized payload, then fans that payload out to all peers.
 
@@ -348,14 +350,14 @@ cancel(); // sends /queue/unlisten RPC
 **Limitations:**
 - One callback per topic per client. Setting a new listener for the same topic overwrites the previous.
 - Multiple topics can be listened to simultaneously (uses `Map<topic, callback>`).
-- Server dispatch timer runs every 1s: messages experience up to ~1s latency.
+- Server pushes pending messages when the listener registers and on each non-delayed `enqueue()`. Delayed, requeued, and `atomic()`-enqueued messages wait for the server's 1s dispatch timer.
 
 **Wire format (server → client push):**
 ```json
 { "type": "queue", "topic": "emails", "message": { "id": 1, "payload": ..., "attempts": 0 } }
 ```
 
-**Listen internals on server:** `queueListeners: Map<topic, Set<callback>>` with round-robin index per topic. `dispatchToListeners()` dequeues one message, distributes round-robin. Timer starts on first listener, stops when all topics have no listeners.
+**Listen internals on server:** `queueListeners: Map<topic, Set<callback>>` with round-robin index per topic. `dispatchToListeners()` dequeues one message at a time until the topic is empty, distributing round-robin. It runs on listener registration, after non-delayed `enqueue()`, and on a 1s timer that starts on first listener and stops when all topics have no listeners.
 
 ---
 
@@ -431,7 +433,7 @@ const { deleted } = await kv.cleanExpired(); // 2
 - `health()` uses raw `fetch GET {url}/health`, bypassing the transport layer.
 
 **WebSocket RPC details:**
-- Counter `rpcId` starts at 0, increments per call, wraps via `++rpcId`.
+- Counter `rpcId` starts at 0 and is pre-incremented per call (`++rpcId`), so the first id is 1. It never resets.
 - `rpcCallbacks: Map<number, { resolve, reject }>` stores pending promises by id.
 - On message: if `data.id` exists → lookup callback. Watch pushes go to `watchSubscription.callback`; queue pushes go to `queueCallbacks.get(topic)`.
 - On close: rejects all pending RPCs and falls back to REST. If `autoReconnect` is false, subscriptions are cleared. If true, they are retained and restored after reconnect.
@@ -484,12 +486,15 @@ Used internally by `getAsync()`. Can also be used standalone for any deduplicati
 5. `listen()` callbacks must call `acknowledge()` manually: messages are NOT auto-acked.
 6. `getAsync()` uses `JSON.stringify(key)` as singleflight dedup key. Uses atomic `check({ version: null })` for cross-process safety: two clients computing the same key, one wins and the other re-reads.
 7. `health()` is the only method that bypasses auth: direct GET request, no transport layer.
-8. `@coderbuzz/kvs` is a peer dependency: provides TypeScript types used by the client SDK. Must be installed alongside.
+8. No dependency or peer dependency on `@coderbuzz/kvs`. The client ships its own types; its `KvWatchEvent` is `{ sequence?, reset? }`, a subset of the store's `KvWatchEvent` (no `initial`, `changedKeys`, `coalesced`).
 9. WebSocket auth happens via RPC `auth` after connection. Query-string tokens are a server migration option and should be disabled in production because URLs can be logged.
 10. `Singleflight` in `kvs-client` is a separate class from the one in `kvs`. Same API, separate implementation.
 11. No `increment` endpoint: the server doesn't expose a dedicated increment RPC. Use `get` + `set` or `atomic()` with version checks for atomic counters.
-12. Queue dispatch timer runs every 1s on the server: `listen()` messages experience up to ~1s max latency.
-13. Messages not acknowledged within 30s are auto-requeued by the server (up to `maxAttempts`).
+12. Non-delayed `enqueue()` pushes to `listen()` immediately. Delayed, requeued, and `atomic()`-enqueued messages wait for the server's 1s dispatch timer.
+13. Unacknowledged messages are requeued by the server's 60s timer once `deliverAt` is more than 30s old (up to `maxAttempts`).
+14. `watch()`, `unwatch`, `listen()`, and `unlisten` are sent without an `id`. If the server rejects them (empty key list, more than `maxWatchKeys`, forbidden key or topic), its reply has no `id` and no `type`, so `onmessage` drops it: no error is thrown and no events arrive.
+15. With `autoReconnect: true`, a rejected token also triggers the reconnect loop: the server closes the socket after the auth error, `onclose` schedules a reconnect, and it keeps retrying with backoff (capped at `reconnectMaxDelayMs`) until `close()` is called.
+16. The WebSocket URL is `url` with a leading `http` replaced by `ws` (so `https` becomes `wss`) plus `/ws`. Auth always uses the post-connect `auth` RPC, never a query token.
 
 ---
 
@@ -535,8 +540,8 @@ private async _post(path: string, params: unknown): Promise<any> {
   return res.json();
 }
 ```
-- Synchronous in flow: one request at a time (no pipelining).
-- Errors thrown synchronously on non-2xx status.
+- Each call is an independent `fetch`; concurrent calls run in parallel.
+- Non-2xx status rejects the returned promise with `Error("KVS {path}: {status} {statusText}")`.
 
 ### `_rpc(path, params)`: WebSocket RPC
 ```ts
@@ -548,10 +553,10 @@ private _rpc(path: string, params: unknown): Promise<any> {
   });
 }
 ```
-- Increments `rpcId` (starts at 0, never resets, wraps via 64-bit overflow, practically unbounded).
+- Increments `rpcId` (a JS number starting at 0, never reset; exact up to `Number.MAX_SAFE_INTEGER`).
 - Stores `{ resolve, reject }` in `rpcCallbacks` Map keyed by `id`.
 - Sends JSON-RPC request over WebSocket.
-- Response routed via `onmessage` handler: lookup by `data.id`, call `resolve(data.result)` or `reject(data.error)`.
+- Response routed via `onmessage` handler: lookup by `data.id`, call `resolve(data.result)` or `reject(new Error(data.error))`.
 
 ### Transport Switching
 - Constructor sets `this._transport = this._post.bind(this)`: REST is default.
@@ -627,7 +632,7 @@ Server: joins or creates an ordered-key WatchHub group
   → one serialization per committed mutation batch, fan-out to group peers
 
 Push message (server → client):
-{ "type": "watch", "entries": [entry|null, ...], "sequence": 42, "reset": false }
+{ "type": "watch", "entries": [entry|null, ...], "sequence": 42 }   // "reset": true only on reset
 
 Client onmessage:
   → discard a decreasing sequence on the current connection
@@ -653,7 +658,7 @@ Client: listen(topic, callback)
      (overwrites previous for same topic, allows multiple topics)
 
 Server: registers listener in store.queueListeners
-  → dispatch timer (1s) dequeues messages round-robin
+  → dispatches pending messages immediately, then on non-delayed enqueue and every 1s, round-robin
 
 Push message (server → client):
 { "type": "queue", "topic": "...", "message": QueueMessage }
