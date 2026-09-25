@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@b37bd48 -->
+<!-- docs: sync from coderbuzz/codex@15d78e0 -->
 
 # KVS Client: `@coderbuzz/kvs-client`
 
@@ -72,9 +72,9 @@ const msgs = await kv.dequeue("emails", 10);
 for (const msg of msgs) {
   try {
     await sendEmail(msg.payload);
-    await kv.acknowledge(msg.id);
-  } catch {
-    // Don't ack: auto-requeued after 30s
+    await kv.acknowledge(msg.id, msg.token);
+  } catch (error) {
+    await kv.nack(msg.id, msg.token, { error: String(error) }); // retried after a backoff
   }
 }
 
@@ -88,9 +88,8 @@ const { cancel } = kv.watch([["config", "theme"]], (entries) => {
 });
 
 // Push-based queue listener
-kv.listen("emails", (msg) => {
-  processEmail(msg.payload);
-  kv.acknowledge(msg.id);
+kv.listen("emails", async (msg) => {
+  await processEmail(msg.payload); // resolves → acked, throws → retried
 });
 
 kv.close(); // revert to REST
@@ -221,11 +220,11 @@ if (result.ok) {
 
 ## Queue Methods
 
-All work over both transports.
+All work over both transports. A dequeued (or pushed) message is **leased** to you: it carries a `token`, and you finish it with `acknowledge(msg.id, msg.token)` or give it back with `nack(...)`. A message neither acked nor nacked before `msg.lockedUntil` is delivered again; after `maxAttempts` deliveries it is dead-lettered.
 
 ### `enqueue(payload: unknown, options?: QueueOptions): Promise<{ ok: true, id: number }>`
 
-**Defaults:** `topic: "default"`, `delay: 0`, `maxAttempts: 3`.
+**Defaults:** `topic: "default"`, `delay: 0`, `maxAttempts: 3` (integer >= 1).
 
 ```ts
 const result = await kv.enqueue(
@@ -235,38 +234,48 @@ const result = await kv.enqueue(
 // { ok: true, id: 1 }
 ```
 
-### `dequeue(topic?: string, limit?: number): Promise<QueueMessage[]>`
+### `dequeue(topic?: string, limit?: number, options?: { visibilityTimeout?: number }): Promise<QueueMessage[]>`
 
-**Defaults:** `topic: "default"`, `limit: 1`.
-
-Dequeue messages ready for delivery. Messages are moved to `"processing"` status on the server. Not acknowledged within 30s → auto-requeued (up to `maxAttempts`).
+**Defaults:** `topic: "default"`, `limit: 1`, `visibilityTimeout`: the server store's (30 s).
 
 ```ts
-const messages = await kv.dequeue("emails", 10);
-
-// Worker loop: acknowledge on success, skip on failure
-for (const msg of messages) {
+for (const msg of await kv.dequeue("emails", 10)) {
   try {
     await sendEmail(msg.payload);
-    await kv.acknowledge(msg.id); // mark as done
-  } catch {
-    // Don't acknowledge: auto-requeued after 30s (up to maxAttempts)
+    await kv.acknowledge(msg.id, msg.token);
+  } catch (error) {
+    await kv.nack(msg.id, msg.token, { error: String(error) }); // retried after the backoff
   }
 }
 ```
 
-### `acknowledge(id: number): Promise<boolean>`
+### `acknowledge(id: number, token: string): Promise<boolean>`
+
+`true` when acknowledged; `false` when the lease is no longer yours (it expired and the message went to someone else). A missing token throws `TypeError`.
+
+### `nack(id: number, token: string, options?: { error?: string, delay?: number }): Promise<boolean>`
+
+Retry after `delay` ms (default: the server's backoff), or dead-letter on the last attempt. `error` becomes the message's `lastError`.
+
+### `extendLease(id: number, token: string, visibilityTimeout?: number): Promise<boolean>`
+
+Keep a long job's lease; `0` hands the message back at once.
+
+### `listDead(topic?, { limit?, after? }?)`, `retryDead(topic?, id?)`, `deleteDead(topic?, id?)`, `queueStats(topic?)`
 
 ```ts
-const ok = await kv.acknowledge(message.id);
-// true if found and acknowledged, false if already processed
+const dead = await kv.listDead("emails");      // QueueDeadMessage[]: lastError, failedAt
+await kv.retryDead("emails", dead[0].id);      // or all: kv.retryDead("emails")
+await kv.deleteDead("emails");
+await kv.queueStats("emails");                 // [{ topic, pending, delayed, processing, dead, done, oldestPendingAt }]
 ```
 
 **Message lifecycle (server-side):**
 ```
-pending → (dequeue) → processing → (acknowledge) → done
-                           ↓ not acked within 30s
-                        requeue → pending (up to maxAttempts)
+pending ──dequeue / push──▶ processing (leased) ──acknowledge──▶ deleted
+   ▲                            │
+   └── nack or lease expiry ────┤ (retried after the backoff)
+                                └── last attempt failed ──▶ dead ── retryDead ─▶ pending
 ```
 
 ---
@@ -329,26 +338,31 @@ cancel(); // unsubscribe: sends /kv/unwatch RPC
 - `event.sequence` is monotonic within one server process. Decreasing sequences on the same connection are ignored; sequence tracking resets after reconnect.
 - Reconnect recovery is snapshot-based: re-subscription immediately returns current values, covering changes made while offline.
 
-### `listen(topic: string, callback: (msg: QueueMessage) => void): { cancel: () => void }`
+### `listen(topic: string, handler: (msg: QueueMessage) => unknown, options?: QueueListenOptions): { cancel: () => void }`
 
-Push-based queue message delivery. Server distributes messages round-robin across all connected listeners. **Requires `open()`.**
+Push-based queue delivery. **Requires `open()`.** By default the handler is awaited: the message is acknowledged when it resolves and nacked (retried, dead-lettered after `maxAttempts`) when it throws.
 
 ```ts
 await kv.open();
 
-const { cancel } = kv.listen("emails", (msg) => {
-  processEmail(msg.payload);
-  kv.acknowledge(msg.id); // must ack manually
-});
+const { cancel } = kv.listen("emails", async (msg) => {
+  await sendEmail(msg.payload); // throw to retry
+}, { concurrency: 4 });
 
 cancel(); // unsubscribe: sends /queue/unlisten RPC
 ```
 
-**Limitations:**
-- One callback per topic per client: calling again for the same topic overwrites the previous.
-- Multiple topics can be listened to simultaneously.
-- Pending messages are pushed when you listen and on each non-delayed `enqueue()`. Delayed, requeued, and `atomic()`-enqueued messages wait for the server's 1 s dispatch timer.
-- Messages distributed round-robin across all connected listeners (work-stealing).
+| Option | Default | Meaning |
+|---|---|---|
+| `concurrency` | `1` | Messages the server pushes before you ack or nack them |
+| `visibilityTimeout` | server store's | Lease length, ms |
+| `autoAck` | `true` | `false`: call `acknowledge(msg.id, msg.token)` / `nack()` yourself |
+
+**Behavior:**
+- The server pushes at most `concurrency` messages and waits for their ack or nack (or lease expiry) before pushing more.
+- One handler per topic per client: calling again for the same topic replaces it. Multiple topics can be listened to simultaneously.
+- Listeners on other clients share the topic: whoever has a free slot gets the next message.
+- If the connection drops, the server hands the unacked messages back at once.
 - Without `autoReconnect`, an unexpected disconnect drops all watch/listen subscriptions; call `open()` and subscribe again.
 
 ---
@@ -424,8 +438,11 @@ const data = await kv.cleanExpired();
 | `enqueue(payload, options)` | `options.topic` | `"default"` |
 | | `options.delay` | `0` |
 | | `options.maxAttempts` | `3` |
-| `dequeue(topic, limit)` | `topic` | `"default"` |
+| `dequeue(topic, limit, options)` | `topic` | `"default"` |
 | | `limit` | `1` |
+| | `options.visibilityTimeout` | server store's (30 s) |
+| `listen(topic, handler, options)` | `concurrency` / `autoAck` | `1` / `true` |
+| `listDead(topic, options)` | `limit` / `after` | `100` / `0` (server) |
 | constructor | `autoReconnect` | `false` |
 | | `reconnectMinDelayMs` | `250` |
 | | `reconnectMaxDelayMs` | `10000` |
@@ -449,8 +466,12 @@ import type {
   KvListSelector,  // { prefix?, start?, end? }
   KvListOptions,   // { limit?, cursor?, reverse? }
   KvListResult,    // { entries, cursor }
-  QueueMessage,    // { id, topic, payload, enqueuedAt, deliverAt, attempts, maxAttempts }
+  QueueMessage,    // { id, topic, payload, enqueuedAt, deliverAt, attempts, maxAttempts, token, lockedUntil, lastError }
+  QueueDeadMessage,// { id, topic, payload, …, lastError, failedAt }
   QueueOptions,    // { topic?, delay?, maxAttempts? }
+  QueueNackOptions,   // { error?, delay? }
+  QueueListenOptions, // { concurrency?, visibilityTimeout?, autoAck? }
+  QueueStats,      // { topic, pending, delayed, processing, dead, done, oldestPendingAt }
 } from "@coderbuzz/kvs-client";
 ```
 
@@ -467,7 +488,11 @@ import type {
 | `KvListSelector` | `{ prefix?: KvKey, start?: KvKey, end?: KvKey }` |
 | `KvListOptions` | `{ limit?: number, cursor?: string, reverse?: boolean }` |
 | `KvListResult` | `{ entries: KvEntry[], cursor: string \| null }` |
-| `QueueMessage` | `{ id, topic, payload, enqueuedAt, deliverAt, attempts, maxAttempts }` |
+| `QueueMessage` | `{ id, topic, payload, enqueuedAt, deliverAt, attempts, maxAttempts, token, lockedUntil, lastError }` |
+| `QueueDeadMessage` | `{ id, topic, payload, enqueuedAt, deliverAt, attempts, maxAttempts, lastError, failedAt }` |
+| `QueueNackOptions` | `{ error?: string, delay?: number }` |
+| `QueueListenOptions` | `{ concurrency?: number, visibilityTimeout?: number, autoAck?: boolean }` |
+| `QueueStats` | `{ topic, pending, delayed, processing, dead, done, oldestPendingAt }` |
 | `QueueOptions` | `{ topic?: string, delay?: number, maxAttempts?: number }` |
 
 ---
@@ -477,12 +502,12 @@ import type {
 1. `open()` required for `watch()`/`listen()`: throws `"WebSocket not connected. Call open() first."` if not connected.
 2. Only ONE active `watch()` per client: calling `watch()` again overwrites the previous subscription.
 3. One `listen()` callback per topic: calling `listen()` again for the same topic overwrites. Multiple topics can be active simultaneously.
-4. `listen()` callbacks must call `acknowledge()` manually: messages are NOT auto-acked.
+4. `listen()` handlers are awaited and auto-acked (resolve) or nacked (throw). Do not also call `acknowledge()` in them, or pass `autoAck: false`.
 5. Explicit `close()` reverts to REST, cancels reconnect, and removes watch/listen subscriptions. With `autoReconnect: true`, only unexpected closes preserve and restore subscriptions.
 6. `getAsync()` uses `JSON.stringify(key)` as singleflight dedup key: same array in same order. Uses atomic `check({ version: null })` for cross-process safety.
 7. `health()` is the only method that bypasses auth: direct GET request, no transport layer.
 8. No dependency on `@coderbuzz/kvs`: all types are bundled in this package. `KvWatchEvent` here is `{ sequence?, reset? }`, a subset of the store's type.
-9. Delayed, requeued, and `atomic()`-enqueued messages reach `listen()` via the server's 1 s dispatch timer; non-delayed `enqueue()` pushes immediately.
+9. New messages (including `atomic()` enqueues) are pushed at once; delayed messages, retries and expired leases within about a second.
 10. No `increment` endpoint: use `get` + `set` or `atomic()` for atomic counters.
 11. `watch()` and `listen()` send their request without an `id`, so a server-side rejection (too many keys, forbidden key or topic) is not reported: no events arrive and no error is thrown.
 
@@ -502,7 +527,7 @@ import type {
 // Sent without id (no response expected)
 { "method": "/kv/watch", "params": { "keys": [["config", "theme"], ["config", "lang"]] } }
 { "method": "/kv/unwatch" }
-{ "method": "/queue/listen", "params": { "topic": "emails" } }
+{ "method": "/queue/listen", "params": { "topic": "emails", "concurrency": 4 } }
 { "method": "/queue/unlisten", "params": { "topic": "emails" } }
 ```
 
@@ -518,7 +543,7 @@ import type {
 ```json
 { "type": "watch", "entries": [{ "key": [...], "value": ..., "version": 1 }, null], "sequence": 42 }
 // "reset": true is present only on reset tombstone snapshots
-{ "type": "queue", "topic": "emails", "message": { "id": 1, "payload": ..., "attempts": 0 } }
+{ "type": "queue", "topic": "emails", "message": { "id": 1, "payload": ..., "attempts": 1, "token": "3f0c6c1e-...", "lockedUntil": 1700000030000 } }
 ```
 
 ---
