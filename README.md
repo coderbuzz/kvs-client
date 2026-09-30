@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@e61149f -->
+<!-- docs: sync from coderbuzz/codex@d1487ff -->
 
 # KVS Client: `@coderbuzz/kvs-client`
 
@@ -25,7 +25,8 @@ Has no dependencies or peer dependencies: it ships its own copies of the KVS typ
 - **WebSocket RPC**: lower latency with `open()`, REST fallback on disconnect
 - **Optional recovery**: exponential-backoff reconnect restores watch/listen subscriptions and refreshes the current snapshot
 - **getAsync**: cache-with-compute pattern with singleflight deduplication + cross-process safety
-- **Atomic operations**: fluent builder for multi-key transactions with version checks
+- **Atomic operations**: fluent builder for multi-key transactions with version checks and `sum` counters
+- **Batch reads**: `getMany()` reads up to 1000 keys in one request
 - **Watch**: real-time key-change subscriptions (requires WebSocket)
 - **Listen**: push-based queue delivery with work-stealing (requires WebSocket)
 - **Health check**: unauthenticated server health endpoint
@@ -38,6 +39,8 @@ Has no dependencies or peer dependencies: it ships its own copies of the KVS typ
 ```sh
 npm install @coderbuzz/kvs-client
 ```
+
+Runs wherever `fetch` and `WebSocket` exist: Bun, Node (checked on 26.10), Deno (checked on 2.9.7), browsers. `getMany()`, `atomic().sum()` and `list()` with `prefix` plus `start`/`end` need kvs-server 6.1 or newer. An older server answers 404 or 400 over REST, but over WebSocket kvs-server 6.0 **silently drops** a `sum` mutation and commits the rest, so upgrade the server first.
 
 ---
 
@@ -56,9 +59,11 @@ const kv = new KvsClient({
 await kv.set(["greeting"], "hello world");
 const entry = await kv.get(["greeting"]);
 
-// Atomic counters via set (increment not exposed as separate endpoint)
-const current = (await kv.get(["counter"]))?.value as number ?? 0;
-await kv.set(["counter"], current + 1);
+// Atomic counters: sum adds on the server, no read needed
+await kv.atomic().sum(["counter"], 1).commit();
+
+// Several keys in one request
+const [greeting, counter] = await kv.getMany([["greeting"], ["counter"]]);
 
 // Atomic transactions with version checks
 const result = await kv.atomic()
@@ -129,6 +134,15 @@ const entry = await kv.get(["users", "alice"]);
 // null if missing or expired
 ```
 
+### `getMany(keys: KvKey[]): Promise<(KvEntry | null)[]>`
+
+```ts
+const [alice, nobody] = await kv.getMany([["users", "alice"], ["users", "nobody"]]);
+// one slot per key, in order; null when missing or expired
+```
+
+Up to 1000 keys per call, read from one snapshot on the server. A credential scoped to key prefixes gets a 403 for the whole call when any key is outside its scope.
+
 ### `set(key: KvKey, value: unknown, options?: { ttl?: number }): Promise<KvCommitResult>`
 
 ```ts
@@ -158,6 +172,9 @@ await kv.list({ prefix: ["users"] });
 // Range query
 await kv.list({ start: ["events", 1000], end: ["events", 2000] });
 
+// A range inside a prefix: start inclusive, end exclusive (kvs-server 6.1)
+await kv.list({ prefix: ["orders"], start: ["orders", "2026-09"], end: ["orders", "2026-10"] });
+
 // Paginated
 const page1 = await kv.list({ prefix: ["logs"] }, { limit: 20 });
 const page2 = await kv.list({ prefix: ["logs"] }, { limit: 20, cursor: page1.cursor });
@@ -165,6 +182,8 @@ const page2 = await kv.list({ prefix: ["logs"] }, { limit: 20, cursor: page1.cur
 // Reverse
 await kv.list({ prefix: ["logs"] }, { limit: 5, reverse: true });
 ```
+
+With `prefix`, `start` and `end` must be keys inside the prefix; a bound outside it is rejected by the server (the request throws `KVS /kv/list: 400 Bad Request`).
 
 **`KvListResult`:** `{ entries: KvEntry[], cursor: string | null }`
 
@@ -197,6 +216,7 @@ const result = await kv.atomic()
   .check({ key: ["new-key"], version: null })     // fail if key exists
   .set(["counter"], 4)
   .set(["meta"], { updatedAt: Date.now() }, { ttl: 3_600_000 })
+  .sum(["stats", "updates"], 1)
   .delete(["old-key"])
   .enqueue({ task: "notify" }, { topic: "jobs" })
   .commit();
@@ -213,8 +233,11 @@ if (result.ok) {
 | `check` | `(...checks: KvCheck[]): this` | Assert key versions. `version: null` = "must not exist". `version: N` = "must be at version N". |
 | `set` | `(key, value, options?): this` | `options: { ttl?: number }` |
 | `delete` | `(key): this` | |
+| `sum` | `(key, delta: number): this` | Add `delta` to the number at `key` (kvs-server 6.1) |
 | `enqueue` | `(payload, options?): this` | `options: QueueOptions` |
 | `commit` | `(): Promise<KvCommitResult \| KvCommitError>` | Execute all operations atomically. Returns `{ ok: false }` if any check fails. |
+
+`sum` works like the store's `increment()` inside the commit: a missing key becomes `delta`, a live key keeps its TTL, and it is atomic against other writers. A `sum` on a key that holds a non-number (or a `delta` that is not a finite number) makes the whole commit fail with nothing written: `commit()` throws `KVS /kv/atomic: 400 Bad Request` over REST, or rejects with the server's error text over WebSocket.
 
 ---
 

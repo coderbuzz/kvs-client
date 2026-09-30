@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@e61149f -->
+<!-- docs: sync from coderbuzz/codex@d1487ff -->
 
 # KVS Client: AI Agent Knowledge File
 
@@ -173,6 +173,19 @@ const entry = await kv.get(["users", "alice"]);
 // { key: ["users", "alice"], value: { name: "Alice" }, version: 1042 } | null
 ```
 
+### `getMany(keys: KvKey[]): Promise<(KvEntry | null)[]>`
+
+```ts
+const entries = await kv.getMany([["users", "alice"], ["users", "nobody"], ["users", "alice"]]);
+// [{ key, value, version }, null, { key, value, version }]
+```
+
+- Sends `POST /kv/get-many { keys }` (or WS `/kv/get-many`) and returns `data.entries`. Needs kvs-server 6.1; kvs-server 6.0 answers 404, so the call throws `KVS /kv/get-many: 404 Not Found` (over WS: `Unknown method: /kv/get-many`).
+- One slot per key, in request order, `null` when absent or expired; a duplicate key gets its own slot. The server reads all keys from one snapshot.
+- Server-side limits: at most 1000 keys (400 beyond), each key non-empty and within the store's `maxKeySize` (400). `[]` returns `[]`.
+- Authorization is all-or-nothing: a prefix-scoped token with one key outside its scope gets 403 (REST throws `KVS /kv/get-many: 403 Forbidden`; WS rejects with `Forbidden: key is outside the allowed prefixes`). Nothing is returned for the allowed keys.
+- No client-side validation or batching: split larger sets yourself.
+
 ### `set(key: KvKey, value: unknown, options?: { ttl?: number }): Promise<KvCommitResult>`
 
 ```ts
@@ -201,6 +214,9 @@ const result = await kv.list({ prefix: ["users"] });
 // Range query
 await kv.list({ start: ["events", 1000], end: ["events", 2000] });
 
+// A range inside a prefix (kvs-server 6.1): start inclusive, end exclusive
+await kv.list({ prefix: ["orders"], start: ["orders", "2026-09"], end: ["orders", "2026-10"] });
+
 // Paginated
 const page1 = await kv.list({ prefix: ["logs"] }, { limit: 20 });
 const page2 = await kv.list({ prefix: ["logs"] }, { limit: 20, cursor: page1.cursor });
@@ -211,6 +227,8 @@ await kv.list({ prefix: ["logs"] }, { limit: 5, reverse: true });
 
 Defaults: `limit: 100`, max `1000`, ascending, `reverse: false`. `cursor` is opaque base64.
 
+`prefix` + `start`/`end` (kvs-server 6.1; 6.0 answered 400): each bound must be a child key of `prefix` (`["orders", …]` for `prefix: ["orders"]`), else 400 with `reason: "kvs: list() start must be a key inside the prefix"`. REST errors throw `KVS /kv/list: 400 Bad Request` (the `reason` is in the body, which `_post` does not read); WS rejects with `TypeError: kvs: list() start must be a key inside the prefix`.
+
 ### `atomic(): AtomicBuilder`
 
 Returns a fluent builder. `commit()` is the terminal async method. All operations run in a single transaction on the server.
@@ -220,6 +238,7 @@ const result = await kv.atomic()
   .check({ key: ["users", "123"], version: 5 })           // optimistic lock
   .check({ key: ["users", "counter"], version: null })     // key must not exist
   .set(["users", "123"], newData, { ttl: 3600_000 })
+  .sum(["users", "count"], 1)                              // kvs-server 6.1
   .delete(["cache", "stale"])
   .enqueue({ task: "notify" }, { topic: "emails" })
   .commit();
@@ -233,8 +252,11 @@ const result = await kv.atomic()
 | `check` | `(...checks: KvCheck[]): this` | Assert key versions. `version: null` = "must not exist". `version: N` = "must be at version N". |
 | `set` | `(key, value, options?): this` | `options: { ttl?: number }` |
 | `delete` | `(key): this` | |
+| `sum` | `(key, delta: number): this` | Mutation `{ type: "sum", key, value: delta }` (kvs-server 6.1) |
 | `enqueue` | `(payload, options?): this` | `options: QueueOptions` |
 | `commit` | `(): Promise<KvCommitResult \| KvCommitError>` | Execute all atomically. Returns `{ ok: false }` if any check fails. |
+
+**`sum(key, delta)`** is sent as-is (no client-side check of `delta`). Server semantics (kvs 0.6 `atomic().sum()`): missing/expired key → `delta` without TTL; live number → `value + delta` keeping its TTL; applied after the request's earlier mutations; atomic against concurrent writers on SQLite and PostgreSQL. Errors fail the whole commit, nothing written: stored non-number (`reason: "kvs: atomic().sum() needs a number, ..."`) or `delta` not a finite number (`"... delta must be a finite number, ..."`) → REST throws `KVS /kv/atomic: 400 Bad Request`, WS rejects with the text. kvs-server 6.0 rejects the unknown mutation type with a 400 (schema). The result is `{ ok, version }`; read the key to see the new value.
 
 ### `getAsync<T>(key: KvKey, fn: () => T | Promise<T>, ttl?: number): Promise<T>`
 
@@ -525,13 +547,15 @@ Used internally by `getAsync()`. Can also be used standalone for any deduplicati
 8. No dependency or peer dependency on `@coderbuzz/kvs`. The client ships its own types; its `KvWatchEvent` is `{ sequence?, reset? }`, a subset of the store's `KvWatchEvent` (no `initial`, `changedKeys`, `coalesced`).
 9. WebSocket auth happens via RPC `auth` after connection. Query-string tokens are a server migration option and should be disabled in production because URLs can be logged.
 10. `Singleflight` in `kvs-client` is a separate class from the one in `kvs`. Same API, separate implementation.
-11. No `increment` endpoint: the server doesn't expose a dedicated increment RPC. Use `get` + `set` or `atomic()` with version checks for atomic counters.
+11. No `increment` endpoint: use `atomic().sum(key, delta).commit()` (kvs-server 6.1), which adds on the server with no read. On kvs-server 6.0, `get` + `atomic().check({ key, version }).set(...)` with retry is the only safe counter; a plain `get` + `set` loses concurrent updates.
 12. New messages (including `atomic()` enqueues) are pushed at once; delayed messages, retries and expired leases within about a second.
 13. A message not acked or nacked before `lockedUntil` is delivered again (default lease 30 s from the dequeue; `extendLease()` for longer jobs). `acknowledge()` with a stale token returns `false`.
 14. `watch()`, `unwatch`, `listen()`, and `unlisten` are sent without an `id`. If the server rejects them (empty key list, more than `maxWatchKeys`, forbidden key or topic), its reply has no `id` and no `type`, so `onmessage` drops it: no error is thrown and no events arrive.
 15. With `autoReconnect: true`, a rejected token also triggers the reconnect loop: the server closes the socket after the auth error, `onclose` schedules a reconnect, and it keeps retrying with backoff (capped at `reconnectMaxDelayMs`) until `close()` is called.
 16. The WebSocket URL is `url` with a leading `http` replaced by `ws` (so `https` becomes `wss`) plus `/ws`. Auth always uses the post-connect `auth` RPC, never a query token.
-17. Server-side rules of kvs-server 6 (kvs 0.5): `list({ prefix })` returns keys *under* the prefix, not the prefix key itself and not string siblings such as `["users\0x"]` for `prefix: ["users"]`; `prefix: []` lists everything; `prefix` together with `start`/`end` is a 400. A key the store rejects (over 2 KiB encoded by default) is a 400 with a `reason`. A `bigint` stored by a server-side app arrives as a decimal string.
+17. Server-side rules of kvs-server 6 (kvs 0.5): `list({ prefix })` returns keys *under* the prefix, not the prefix key itself and not string siblings such as `["users\0x"]` for `prefix: ["users"]`; `prefix: []` lists everything; `prefix` together with `start`/`end` is a 400 on 6.0 and a range inside the prefix on 6.1. A key the store rejects (over 2 KiB encoded by default) is a 400 with a `reason`. A `bigint` stored by a server-side app arrives as a decimal string.
+18. **`sum` against kvs-server 6.0 over WebSocket is silently dropped**: the 6.0 WS handler skipped unknown mutation types and answered `{ ok: true }` for the rest of the commit (REST gets a 400 from the schema). Use kvs-server ≥ 6.1 before sending `sum`, or stay on REST until the server is upgraded. `getMany()` over WS on 6.0 rejects with `Unknown method: /kv/get-many`.
+19. **Runtimes:** plain `fetch` + `WebSocket`, no Bun APIs. `dist/index.js` imports and constructs a client on Node 26.10.0 and Deno 2.9.7 (checked without sending requests); the local-server suite runs on Bun.
 
 ---
 
@@ -542,10 +566,11 @@ Each KvsClient method maps to a specific HTTP endpoint:
 | Client Method | HTTP Method | Endpoint Path | Request Body |
 |---|---|---|---|
 | `get` | POST | `/kv/get` | `{ key }` |
+| `getMany` | POST | `/kv/get-many` | `{ keys }` |
 | `set` | POST | `/kv/set` | `{ key, value, ttl? }` |
 | `delete` | POST | `/kv/delete` | `{ key }` |
 | `list` | POST | `/kv/list` | `{ prefix?, start?, end?, limit?, cursor?, reverse? }` |
-| `atomic().commit()` | POST | `/kv/atomic` | `{ checks?, mutations?, enqueues? }` |
+| `atomic().commit()` | POST | `/kv/atomic` | `{ checks?, mutations?, enqueues? }` (mutations: `set`, `delete`, `sum`) |
 | `enqueue` | POST | `/queue/enqueue` | `{ payload, topic?, delay?, maxAttempts? }` |
 | `dequeue` | POST | `/queue/dequeue` | `{ topic?, limit?, visibilityTimeout? }` |
 | `acknowledge` | POST | `/queue/ack` | `{ id, token }` |
