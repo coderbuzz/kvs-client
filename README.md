@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@15d78e0 -->
+<!-- docs: sync from coderbuzz/codex@e61149f -->
 
 # KVS Client: `@coderbuzz/kvs-client`
 
@@ -125,7 +125,7 @@ All methods work over both REST and WebSocket (auto-selected based on `open()` s
 
 ```ts
 const entry = await kv.get(["users", "alice"]);
-// { key: ["users", "alice"], value: { name: "Alice" }, version: 1 }
+// { key: ["users", "alice"], value: { name: "Alice" }, version: 1042 }
 // null if missing or expired
 ```
 
@@ -133,12 +133,12 @@ const entry = await kv.get(["users", "alice"]);
 
 ```ts
 const result = await kv.set(["users", "alice"], { name: "Alice" });
-// { ok: true, version: 1 }
+// { ok: true, version: 1042 }
 
 await kv.set(["cache", "key"], value, { ttl: 60_000 }); // expires in 60 s
 ```
 
-Every `set` increments `version` by 1. TTL is in milliseconds.
+Every write gets a new `version` from a store-wide versionstamp (kvs-server 6 / kvs 0.5): no two writes get the same one, so a key never gets a version it had before, even after a delete. Compare versions for equality and never assume `+1`. TTL is in milliseconds.
 
 ### `delete(key: KvKey): Promise<{ ok: true }>`
 

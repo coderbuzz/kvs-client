@@ -1,4 +1,4 @@
-<!-- docs: sync from coderbuzz/codex@15d78e0 -->
+<!-- docs: sync from coderbuzz/codex@e61149f -->
 
 # KVS Client: AI Agent Knowledge File
 
@@ -170,19 +170,19 @@ All methods work over both REST and WebSocket (auto-selected based on `open()` s
 
 ```ts
 const entry = await kv.get(["users", "alice"]);
-// { key: ["users", "alice"], value: { name: "Alice" }, version: 1 } | null
+// { key: ["users", "alice"], value: { name: "Alice" }, version: 1042 } | null
 ```
 
 ### `set(key: KvKey, value: unknown, options?: { ttl?: number }): Promise<KvCommitResult>`
 
 ```ts
 const result = await kv.set(["users", "alice"], { name: "Alice" });
-// { ok: true, version: 1 }
+// { ok: true, version: 1042 }
 
 await kv.set(["cache", "key"], value, { ttl: 60_000 }); // expires in 60s
 ```
 
-Every `set` increments `version` by 1. TTL is in milliseconds.
+Every write gets a new `version` from a store-wide versionstamp (kvs-server 6 / kvs 0.5): no two writes get the same one, so a key never gets a version it had before, even after a delete. Compare versions for equality and never assume `+1`. TTL is in milliseconds.
 
 ### `delete(key: KvKey): Promise<{ ok: true }>`
 
@@ -531,6 +531,7 @@ Used internally by `getAsync()`. Can also be used standalone for any deduplicati
 14. `watch()`, `unwatch`, `listen()`, and `unlisten` are sent without an `id`. If the server rejects them (empty key list, more than `maxWatchKeys`, forbidden key or topic), its reply has no `id` and no `type`, so `onmessage` drops it: no error is thrown and no events arrive.
 15. With `autoReconnect: true`, a rejected token also triggers the reconnect loop: the server closes the socket after the auth error, `onclose` schedules a reconnect, and it keeps retrying with backoff (capped at `reconnectMaxDelayMs`) until `close()` is called.
 16. The WebSocket URL is `url` with a leading `http` replaced by `ws` (so `https` becomes `wss`) plus `/ws`. Auth always uses the post-connect `auth` RPC, never a query token.
+17. Server-side rules of kvs-server 6 (kvs 0.5): `list({ prefix })` returns keys *under* the prefix, not the prefix key itself and not string siblings such as `["users\0x"]` for `prefix: ["users"]`; `prefix: []` lists everything; `prefix` together with `start`/`end` is a 400. A key the store rejects (over 2 KiB encoded by default) is a 400 with a `reason`. A `bigint` stored by a server-side app arrives as a decimal string.
 
 ---
 
